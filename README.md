@@ -49,6 +49,14 @@ ranked division is NA for master+ and 1-4 for iron-diamond.
 
 Do NOT change crest type or ID.
 
+#### I do want a different banner than the ranked ones, how do i do ? 
+
+just go to this website : https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/assets/regalia/bannerskins/
+
+there is every single banner in the game. 
+
+Then you go to your RankLobby.js file and change in bannerSrc the "CHALLENGER.png" (or the rank there is) by the one you want in the website i linked you.
+
 
 ### NameSpoofer.js
 
@@ -75,3 +83,5 @@ Name spoofer does not work in the chat.
 [nylish](https://www.youtube.com/watch?v=gU97T9tHs8E&list=PLmfRqBUHwQjJKuxoVOiocEoJPi8SnJSRG&index=3) for the challenger recall
 
 [League Custom Skin](https://github.com/LeagueToolkit/cslol-manager)
+
+[Community Dragon](https://raw.communitydragon.org/) usefull database for all the LoL assets, textures... 
