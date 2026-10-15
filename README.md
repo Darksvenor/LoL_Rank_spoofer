@@ -12,6 +12,10 @@ Thus it is not optimized at all, feel free to contact me for suggestions on disc
 
 The code and description of this mod is in French because chatGPT prompt also was.
 
+## Download 
+
+Get the Simple or Advanced version from the releases.
+
 ## How to use the "simple version"
 
 For both RankProfile.js , RankLobby.js and NameSpoofer.js , just put them into your PenguLoader "plugins" file. 
