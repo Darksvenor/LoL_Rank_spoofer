@@ -298,6 +298,9 @@ export function load() {
                     rankedLeagueTier: tierU,
                     rankedLeagueDivision: divStr,
                     rankedWins: winsStr,
+                    // Read by friends WITHOUT the plugin too (friends list hovercard): losses + last season banner
+                    ...(myRank.losses !== undefined && myRank.losses !== null && myRank.losses !== '' ? { rankedLosses: String(Number(myRank.losses) || 0) } : {}),
+                    ...(lastSeasonOf(myRank) ? { rankedPrevSeasonTier: lastSeasonOf(myRank), rankedPrevSeasonDivision: APEX_TIERS.includes(lastSeasonOf(myRank)) ? '' : 'I' } : {}),
                     vrShare: payload,
                     vrAlts: buildAltsPayload(getAllVirtualRanks())
                 }
@@ -340,6 +343,8 @@ export function load() {
         const apply = (puuid, share, fallbackName, sharedBy) => {
             if (!puuid || puuid === currentPuuid) return;
             const old = next[puuid];
+            // "Override" button on the card: your manual values win over what the friend shares
+            if (old && old.override) return;
             const resolved = resolveTierAndDiv(share.tier, share.lp, share.division);
             const entry = {
                 ...(old || {}),
@@ -587,7 +592,10 @@ export function load() {
         let changed = false;
         const out = [];
 
+        const ccSource = (getCopycat() || {}).sourcePuuid;
         for (const s of standings) {
+            // Copycat: you take the copied player's place (their own row disappears)
+            if (ccSource && s.puuid === ccSource && currentPuuid && ranks[currentPuuid]) { changed = true; continue; }
             const conf = ranks[s.puuid];
             if (!conf) { out.push(s); continue; }
             changed = true;
@@ -602,7 +610,8 @@ export function load() {
         }
         if (!changed) return false;
 
-        out.sort((a, b) => (Number(b.leaguePoints) || 0) - (Number(a.leaguePoints) || 0) || (a.position || 9999) - (b.position || 9999));
+        // Same LP: a virtual player goes first (a copycat takes the copied player's spot, not the one below)
+        out.sort((a, b) => (Number(b.leaguePoints) || 0) - (Number(a.leaguePoints) || 0) || ((ranks[b.puuid] ? 1 : 0) - (ranks[a.puuid] ? 1 : 0)) || (a.position || 9999) - (b.position || 9999));
         // The Challenger/GM top has a fixed size: the last real player drops out
         const max = APEX_TIERS.includes(div.tier) ? Number(div.maxLeagueSize || div.topNumberOfPlayers) || 0 : 0;
         while (max && out.length > max) {
@@ -701,6 +710,11 @@ export function load() {
         const rows = data && data.rowData;
         if (!Array.isArray(rows) || !rows.length) return false;
         let changed = false;
+        const ccSource = (getCopycat() || {}).sourcePuuid;
+        if (ccSource && currentPuuid && ranks[currentPuuid] && rows.some(r => r.puuid === ccSource)) {
+            rows.splice(0, rows.length, ...rows.filter(r => r.puuid !== ccSource));
+            changed = true;
+        }
         for (const row of rows) {
             const conf = ranks[row.puuid];
             if (!conf || !conf.tier) continue;
@@ -817,6 +831,84 @@ export function load() {
     const REGALIA_FIELDS = ['bannerType', 'crestType', 'selectedPrestigeCrest', 'lastSeasonHighestRank', 'highestRankedEntry'];
     const BACKDROP_FIELDS = ['backdropAugments', 'backdropImage', 'backdropMaskColor', 'backdropType', 'backdropVideo', 'championId'];
 
+    // "Mirror": requests about YOU in these modules (Clash trophies / banners, banner flags) are answered with the
+    // same request made for the copied player. Learned automatically: the first time the client asks for one of
+    // these URLs, the target's version is fetched in the background and used from then on.
+    const MIRROR_RE = /^\/?(lol-clash\/|lol-banners\/|lol-trophies\/)/;
+    const MIRROR_TEMPLATES_KEY = 'pengu_virtual_copycat_templates';
+    const DEFAULT_MIRROR_TEMPLATES = [
+        'lol-banners/v1/players/{P}/flags/equipped',
+        'lol-banners/v1/current-summoner/flags/equipped',
+        'lol-banners/v1/current-summoner/frames/equipped',
+        'lol-trophies/v1/players/{P}/trophies/profile',
+        'lol-trophies/v1/current-summoner/trophies/profile'
+    ];
+    const mirrorPending = new Set();
+
+    function mirrorTemplate(url) {
+        let u = String(url || '').replace(/^https?:\/\/[^/]+/, '').replace(/^\//, '');
+        if (!MIRROR_RE.test(u)) return null;
+        let t = u;
+        if (currentPuuid) t = t.split(currentPuuid).join('{P}');
+        if (currentSummonerId) t = t.replace(new RegExp(`(^|[/=])${currentSummonerId}(?=$|[/?&])`, 'g'), '$1{S}');
+        if (t === u && !/current-summoner|local-player|\/me(\/|$|\?)/.test(u)) return null;
+        return t;
+    }
+
+    // URL of the same request for the copied player
+    function mirrorTargetUrl(t, cc) {
+        let u = t.split('{P}').join(cc.sourcePuuid).split('{S}').join(String(cc.sourceSummonerId || ''));
+        // "current-summoner" has no id: ask for the player-specific version of the same data
+        u = u.replace(/^(lol-banners|lol-trophies)\/v1\/current-summoner\//, `$1/v1/players/${cc.sourcePuuid}/`);
+        return /current-summoner|local-player|\/me(\/|$|\?)/.test(u) ? null : '/' + u;
+    }
+
+    function swapIds(v, from, to) {
+        if (Array.isArray(v)) return v.map(x => swapIds(x, from, to));
+        if (v && typeof v === 'object') { const o = {}; for (const [k, x] of Object.entries(v)) o[k] = swapIds(x, from, to); return o; }
+        if (typeof v === 'string') { let s = v; for (let i = 0; i < from.length; i++) if (from[i]) s = s.split(String(from[i])).join(String(to[i])); return s; }
+        if (typeof v === 'number') { for (let i = 0; i < from.length; i++) if (from[i] && v === Number(from[i]) && Number(to[i])) return Number(to[i]); }
+        return v;
+    }
+
+    async function learnMirror(t, cc) {
+        const key = `${cc.sourcePuuid}|${t}`;
+        if (mirrorPending.has(key)) return;
+        mirrorPending.add(key);
+        try {
+            if (!cc.sourceSummonerId) {
+                const s2 = await getJson(`/lol-summoner/v2/summoners/puuid/${cc.sourcePuuid}`).catch(() => null);
+                if (s2 && s2.summonerId) cc.sourceSummonerId = s2.summonerId;
+            }
+            const url = mirrorTargetUrl(t, cc);
+            let data = null;
+            if (url) data = await getJson(url).catch(() => null);
+            const cur = getCopycat();
+            if (!cur || cur.sourcePuuid !== cc.sourcePuuid) return;
+            cur.sourceSummonerId = cc.sourceSummonerId;
+            cur.snapshot.mirror = { ...(cur.snapshot.mirror || {}), [t]: data };
+            setCopycat(cur);
+            const known = storeGet(MIRROR_TEMPLATES_KEY, []) || [];
+            if (!known.includes(t)) storeSet(MIRROR_TEMPLATES_KEY, [...known, t].slice(-40));
+            if (data !== null) log(`Copycat: learned ${t}`);
+        } finally {
+            mirrorPending.delete(key);
+        }
+    }
+
+    // Mirrored request that FAILED for you (e.g. 404 "no banner flag" / "no trophy") but exists for the copied player:
+    // the XHR hook answers it with the copied data and a 200 status.
+    function copycatForcedBody(url) {
+        const cc = getCopycat();
+        const tpl = cc && currentPuuid ? mirrorTemplate(url) : null;
+        if (!tpl) return null;
+        const mirror = cc.snapshot.mirror || {};
+        if (!(tpl in mirror)) { learnMirror(tpl, cc); return null; }
+        const src = mirror[tpl];
+        if (src === null || src === undefined || typeof src !== 'object') return null;
+        return JSON.stringify(swapIds(clone(src), [cc.sourcePuuid, cc.sourceSummonerId], [currentPuuid, currentSummonerId]));
+    }
+
     async function copycatFrom(riotId) {
         const [gameName, tagLine] = splitRiotId(riotId);
         if (!gameName || !tagLine) throw new Error('Use the Name#TAG format.');
@@ -876,8 +968,17 @@ export function load() {
         delete entry.shared;
         if (entry.tier) ranks[currentPuuid] = entry;
 
+        // Clash / banner data, for every URL template already learned
+        const ccTmp = { sourcePuuid: puuid, sourceSummonerId: summ.summonerId };
+        const templates = [...new Set([...DEFAULT_MIRROR_TEMPLATES, ...(storeGet(MIRROR_TEMPLATES_KEY, []) || [])])];
+        snapshot.mirror = {};
+        await Promise.all(templates.map(async t => {
+            const u = mirrorTargetUrl(t, ccTmp);
+            snapshot.mirror[t] = u ? await getJson(u).catch(() => null) : null;
+        }));
+
         const prev = getCopycat();
-        setCopycat({ sourcePuuid: puuid, riotId: displayId, snapshot, backup: prev ? prev.backup : old, at: Date.now() });
+        setCopycat({ sourcePuuid: puuid, sourceSummonerId: summ.summonerId, riotId: displayId, snapshot, backup: prev ? prev.backup : old, at: Date.now() });
         saveAllVirtualRanks(ranks);
         syncChatPresenceToLCU(true);
         log(`Copycat: copied ${displayId}`);
@@ -906,6 +1007,18 @@ export function load() {
         const S = cc.snapshot;
         const mySid = currentSummonerId ? String(currentSummonerId) : '';
         let changed = false;
+
+        const tpl = mirrorTemplate(url);
+        if (tpl) {
+            const mirror = S.mirror || {};
+            if (!(tpl in mirror)) { learnMirror(tpl, cc); return false; }
+            const src = mirror[tpl];
+            if (src === null || src === undefined || typeof src !== 'object' || Array.isArray(src) !== Array.isArray(data)) return false;
+            const swapped = swapIds(clone(src), [cc.sourcePuuid, cc.sourceSummonerId], [currentPuuid, currentSummonerId]);
+            if (Array.isArray(data)) data.splice(0, data.length, ...swapped);
+            else { for (const k of Object.keys(data)) delete data[k]; Object.assign(data, swapped); }
+            return true;
+        }
 
         const isMe = (o) => o && typeof o === 'object' && (o.puuid === currentPuuid || (mySid && String(o.summonerId) === mySid));
         const patchSummoner = (o) => {
@@ -981,6 +1094,7 @@ export function load() {
 
     function transformMain(url, data) {
         if (url.includes('lol-game-data/assets/v1/generic-assets.json')) return transformGenericAssets(data);
+        if (/lol-ranked\/v1\/notifications(\?|$)/.test(url)) return transformRankedNotifications(data);
         const settings = getSettings();
         const ranks = getAllVirtualRanks();
         if (!Object.keys(ranks).length) return false;
@@ -993,13 +1107,96 @@ export function load() {
         return false;
     }
 
+    // ---------------------------------------------------------------------
+    // PROMOTION CEREMONY (the full-screen video with the new emblem)
+    // The client (rcp-fe-lol-leagues) shows it for /lol-ranked/v1/notifications entries with
+    // notifyReason "LEAGUE_PROMOTED" + displayType "VIGNETTE". The video is picked from the tier:
+    // videos/ranked/tier-promotion-from-<previous tier>.webm, then tier-promotion-to-<tier>.
+    // - real Solo/Duo promotions/demotions: removed from the list (and acknowledged) when "Spoof End of Ranked" is on
+    // - virtual TIER promotion: a fake notification is pushed to the client through its own socket
+    // ---------------------------------------------------------------------
+    let clientSocket = null;
+    const seenEventNames = new Set();
+    const FAKE_NOTIF_BASE = 1900000000;
+    const CEREMONY_KEY = 'pengu_virtual_pending_ceremony';
+    const ackedRealNotifs = new Set();
+
+    function transformRankedNotifications(data) {
+        if (!Array.isArray(data) || !getSettings().spoofEndGame) return false;
+        const keep = data.filter(n => {
+            if (!n || Number(n.id) >= FAKE_NOTIF_BASE) return true;
+            const real = (n.notifyReason === 'LEAGUE_PROMOTED' || n.notifyReason === 'LEAGUE_DEMOTED') && n.queueType === RANKED_QUEUE;
+            if (real && n.id !== undefined && !ackedRealNotifs.has(n.id)) {
+                ackedRealNotifs.add(n.id);
+                originalFetch(`/lol-ranked/v1/notifications/${n.id}/acknowledge`, { method: 'POST' }).catch(() => {});
+            }
+            return !real;
+        });
+        if (keep.length === data.length) return false;
+        data.splice(0, data.length, ...keep);
+        return true;
+    }
+
+    function queueCeremony(rank) {
+        const r = resolveTierAndDiv(rank.tier, rank.lp, rank.division);
+        const notif = {
+            id: FAKE_NOTIF_BASE + Math.floor(Math.random() * 90000000),
+            displayType: 'VIGNETTE',
+            notifyReason: 'LEAGUE_PROMOTED',
+            eventType: 'LEAGUE_PROMOTED',
+            queueType: RANKED_QUEUE,
+            tier: r.tier,
+            division: APEX_TIERS.includes(r.tier) ? 'NA' : r.div,
+            leaguePoints: Number(rank.lp) || 0,
+            leaguePointsDelta: 0,
+            miniseriesProgress: '',
+            consolationLpUsed: 0,
+            provisionalGamesRemaining: 0,
+            rewardEarnedId: '',
+            rewardEarnedType: '',
+            priority: 0
+        };
+        storeSet(CEREMONY_KEY, notif);
+        flushPendingCeremony();
+    }
+
+    function flushPendingCeremony() {
+        const notif = storeGet(CEREMONY_KEY, null);
+        if (!notif || !clientSocket || !getSettings().spoofEndGame) return;
+        const names = new Set(['OnJsonApiEvent', 'OnJsonApiEvent_lol-ranked_v1_notifications']);
+        for (const n of seenEventNames) if (n === 'OnJsonApiEvent' || n.startsWith('OnJsonApiEvent_lol-ranked')) names.add(n);
+        try {
+            for (const name of names) {
+                const payload = JSON.stringify([8, name, { uri: '/lol-ranked/v1/notifications', eventType: 'Update', data: [notif] }]);
+                clientSocket.dispatchEvent(new window.MessageEvent('message', { data: payload }));
+            }
+            storeSet(CEREMONY_KEY, null);
+            log(`Promotion ceremony: ${notif.tier}`);
+        } catch (e) {}
+    }
+
+    // Test:  VirtualRanksTestPromotion('PLATINUM')  in the console (or the "Test promotion ceremony" action).
+    // Plays the ceremony for that tier WITHOUT changing your virtual rank.
+    function testPromotionCeremony(tier) {
+        const t = String(tier || '').toUpperCase() || (() => {
+            const c = currentPuuid && getAllVirtualRanks()[currentPuuid];
+            return c ? resolveTierAndDiv(c.tier, c.lp, c.division).tier : 'PLATINUM';
+        })();
+        if (!TIER_ORDER.includes(t)) return `Unknown tier "${tier}". Use IRON ... CHALLENGER.`;
+        if (!getSettings().spoofEndGame) return 'Turn on "Spoof End of Ranked" first.';
+        if (!clientSocket) return 'The client socket is not hooked yet: wait a few seconds and try again.';
+        queueCeremony({ tier: t, division: 'IV', lp: APEX_TIERS.includes(t) ? (t === 'CHALLENGER' ? apexCutoffs.CHALLENGER : t === 'GRANDMASTER' ? apexCutoffs.GRANDMASTER : 0) : 0 });
+        return `Ceremony sent: ${t}`;
+    }
+    window.VirtualRanksTestPromotion = testPromotionCeremony;
+
     // WebSocket: the client also receives live updates through its socket ([8,"OnJsonApiEvent...",{uri,data}]).
     // Without this, a value could revert to the real one after a game or a status update.
     (function hookWebSocketEvents() {
         const ME = window.MessageEvent, WS = window.WebSocket;
         const desc = ME && WS && Object.getOwnPropertyDescriptor(ME.prototype, 'data');
         if (!desc || !desc.get) return;
-        const WS_URI_RE = /"uri":"\/?(lol-ranked\/|lol-social-leaderboard\/|lol-summoner\/|lol-regalia\/|lol-challenges\/|lol-chat\/v1\/me"|lol-collections\/v1\/inventories\/\d+\/backdrop|lol-statstones\/v1\/profile-summary\/)/;
+        const WS_URI_RE = /"uri":"\/?(lol-ranked\/|lol-social-leaderboard\/|lol-summoner\/|lol-regalia\/|lol-challenges\/|lol-chat\/v1\/me"|lol-collections\/v1\/inventories\/\d+\/backdrop|lol-statstones\/v1\/profile-summary\/|lol-clash\/|lol-banners\/|lol-trophies\/)/;
         const done = new WeakMap();
         Object.defineProperty(ME.prototype, 'data', {
             configurable: true,
@@ -1008,6 +1205,9 @@ export function load() {
                 const raw = desc.get.call(this);
                 if (typeof raw !== 'string' || !raw.startsWith('[8,') || !(this.target instanceof WS)) return raw;
                 if (done.has(this)) return done.get(this);
+                if (clientSocket !== this.target) { clientSocket = this.target; setTimeout(flushPendingCeremony, 0); }
+                const nm = raw.slice(4, raw.indexOf('"', 4));
+                if (nm && nm.startsWith('OnJsonApiEvent')) seenEventNames.add(nm);
                 let out = raw;
                 if (WS_URI_RE.test(raw)) {
                     try {
@@ -1040,15 +1240,45 @@ export function load() {
             return origOpen.call(this, method, url, ...rest);
         };
 
+        const statusDesc = Object.getOwnPropertyDescriptor(proto, 'status');
+        const statusTextDesc = Object.getOwnPropertyDescriptor(proto, 'statusText');
+        // Copycat: a request that failed for you but has copied data -> answered as a success
+        const forcedOf = function(xhr) {
+            if (xhr.__vrForced !== undefined) return xhr.__vrForced;
+            if (xhr.readyState !== 4 || !statusDesc) return null;
+            const url = xhr.__vrUrl || xhr.responseURL || '';
+            const st = statusDesc.get.call(xhr);
+            let f = null;
+            if (st !== 200 && (!xhr.__vrMethod || xhr.__vrMethod === 'GET') && MIRROR_RE.test(String(url).replace(/^https?:\/\/[^/]+/, ''))) {
+                try { f = copycatForcedBody(url); } catch (e) { f = null; }
+            }
+            xhr.__vrForced = f;
+            return f;
+        };
+        if (statusDesc && statusDesc.get) {
+            Object.defineProperty(proto, 'status', {
+                configurable: true, enumerable: statusDesc.enumerable,
+                get() { return forcedOf(this) ? 200 : statusDesc.get.call(this); }
+            });
+        }
+        if (statusTextDesc && statusTextDesc.get) {
+            Object.defineProperty(proto, 'statusText', {
+                configurable: true, enumerable: statusTextDesc.enumerable,
+                get() { return forcedOf(this) ? 'OK' : statusTextDesc.get.call(this); }
+            });
+        }
+
         const transformed = function(xhr, raw) {
             if (typeof raw !== 'string' || xhr.readyState !== 4) return raw;
+            const forced = forcedOf(xhr);
+            if (forced) return forced;
             // URL: the one recorded by our open(), otherwise the response's own URL (responseURL).
             // Another plugin may replace XMLHttpRequest.open after us: responseURL still works.
             const url = xhr.__vrUrl || xhr.responseURL || '';
             if (!url || (xhr.__vrMethod && xhr.__vrMethod !== 'GET' && !READ_POST_RE.test(url))) return raw;
             if (xhr.__vrRaw === raw) return xhr.__vrOut;
             let out = raw;
-            if (xhr.status === 200 && /lol-ranked\/|lol-social-leaderboard\/|generic-assets\.json|lol-summoner\/|lol-regalia\/|lol-challenges\/|lol-chat\/v1\/me|lol-collections\/v1\/inventories\/\d+\/backdrop|lol-champion-mastery\/|lol-statstones\/v1\/profile-summary/.test(url)) {
+            if (xhr.status === 200 && /lol-ranked\/|lol-social-leaderboard\/|generic-assets\.json|lol-summoner\/|lol-regalia\/|lol-challenges\/|lol-chat\/v1\/me|lol-collections\/v1\/inventories\/\d+\/backdrop|lol-champion-mastery\/|lol-statstones\/v1\/profile-summary|lol-clash\/|lol-banners\/|lol-trophies\//.test(url)) {
                 try {
                     const data = JSON.parse(raw);
                     if (transformXhrJson(url, data)) out = JSON.stringify(data);
@@ -1134,7 +1364,17 @@ export function load() {
             }
         }
 
-        // Demotion (like in game: drop to 75 LP in the division below)
+        // Demotion from NEGATIVE LP (only possible if set by hand): the remainder carries over.
+        // -20 LP and -20 on a loss = -40 -> 60 LP in the division below.
+        const startedNegative = (Number(base.lp) || 0) < 0;
+        while (startedNegative && lp < 0) {
+            if (divIndex > 0) divIndex--;
+            else if (tierIndex > 0) { tierIndex--; divIndex = 3; }
+            else { lp = 0; break; }
+            lp += 100;
+        }
+
+        // Demotion (like in game: drop to 75 LP in the division below). A loss never leaves you with negative LP.
         if (lp < 0) {
             if (divIndex > 0) {
                 divIndex--;
@@ -1693,21 +1933,50 @@ export function load() {
                 const lpc = block.querySelector('.ranked-progression-total-lp-container');
                 if (lpc) replaceFirstUnsignedNumber(lpc, myConf.lp);
             });
+
+            // Header, top left: "Ranked Solo/Duo · W:33 - L:36" -> virtual wins / losses (after this game)
+            const wins = Number(myConf.wins) || 0;
+            const losses = myConf.losses !== undefined && myConf.losses !== null && myConf.losses !== '' ? Number(myConf.losses) || 0 : Math.round(wins * 0.9);
+            const wl = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+            for (let n = wl.nextNode(); n; n = wl.nextNode()) {
+                const v = n.nodeValue;
+                if (!v || !WL_RE.test(v) || !inPostgame(n.parentElement)) continue;
+                const next = v.replace(WL_RE, (m, a, w, sep, b) => `${a}${wins}${sep}${b}${losses}`);
+                if (next !== v) n.nodeValue = next;
+            }
         }
 
-        // 8. VIRTUAL PROMOTION: "Victory" -> "Promoted to <rank>", "+30 LP" -> "Promoted"
+        // 8. END-OF-GAME RESULT FOLLOWS THE VIRTUAL RANK, NOT THE REAL ONE
+        //    - virtual promotion: "Victory" -> "Promoted to <rank>", "+30 LP" -> "Promoted"
+        //    - virtual demotion:  "Defeat" -> "Demoted to <rank>", "-20 LP" -> "Demoted"
+        //    - REAL promotion/demotion but not the virtual one: "Promoted to Gold I" -> "Victory", "Promoted" -> "+19 LP"
         if (settings.spoofEndGame && eogPromo) {
-            const promoWord = clientLang() === 'fr' ? 'Promotion' : 'Promoted';
-            const headerText = clientLang() === 'fr' ? `Promotion en ${eogPromo.label}` : `Promoted to ${eogPromo.label}`;
+            const fr = clientLang() === 'fr';
+            const o = eogPromo;
+            const kind = o.kind || 'promo';
+            let headerText, centerText = null;
+            if (kind === 'promo') {
+                headerText = fr ? `Promotion en ${o.label}` : `Promoted to ${o.label}`;
+                centerText = fr ? 'Promotion' : 'Promoted';
+            } else if (kind === 'demo') {
+                headerText = fr ? `Rétrogradation en ${o.label}` : `Demoted to ${o.label}`;
+                centerText = fr ? 'Rétrogradation' : 'Demoted';
+            } else {
+                headerText = o.isWin === false ? (fr ? 'Défaite' : 'Defeat') : (fr ? 'Victoire' : 'Victory');
+                // The client's own "+X LP" is right; only replace it when the client shows a real promotion/demotion word there
+                if (typeof o.delta === 'number') centerText = `${o.delta >= 0 ? '+' : ''}${o.delta} ${fr ? 'PL' : 'LP'}`;
+            }
 
-            // "+30 LP": the client renders it with animated digits -> hide them and show our text with the same style
             root.querySelectorAll('.ranked-progression-update-result-container').forEach(c => {
                 let promo = Array.from(c.children).find(ch => ch.classList.contains('vr-promo-text'));
                 const others = Array.from(c.children).filter(ch => ch !== promo && ch.tagName !== 'LOL-UIKIT-VIDEO');
+                const clientText = others.map(x => x.textContent).join(' ') + Array.from(c.childNodes).filter(n => n.nodeType === 3).map(n => n.nodeValue).join(' ');
+                const needed = kind !== 'normal' || promo || PROMO_WORD_RE.test(clientText);
+                if (!needed || !centerText) return;
                 if (!promo) {
                     promo = document.createElement('div');
                     promo.className = 'vr-promo-text';
-                    const ref = others.find(o => o.textContent.trim()) || others[0] || c;
+                    const ref = others.find(x => x.textContent.trim()) || others[0] || c;
                     try {
                         const cs = getComputedStyle(ref);
                         for (const k of ['fontFamily', 'fontSize', 'fontWeight', 'color', 'letterSpacing', 'textTransform', 'lineHeight', 'textShadow']) promo.style[k] = cs[k];
@@ -1715,22 +1984,35 @@ export function load() {
                     promo.style.textAlign = 'center';
                     c.appendChild(promo);
                 }
-                setText(promo, promoWord);
-                others.forEach(o => { if (o.style.display !== 'none') o.style.display = 'none'; });
+                setText(promo, centerText);
+                others.forEach(x => { if (x.style.display !== 'none') x.style.display = 'none'; });
                 Array.from(c.childNodes).forEach(n => { if (n.nodeType === 3 && n.nodeValue.trim()) n.nodeValue = ''; });
             });
 
-            // "Victory" title of the end-of-game screen
+            // Header ("Victory" / "Defeat" / the client's real "Promoted to Gold I"), plus any other
+            // stand-alone "Promoted" / "Demoted" word the client puts on the end-of-game screen
             const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
             for (let n = walker.nextNode(); n; n = walker.nextNode()) {
-                if (!VICTORY_RE.test(n.nodeValue) || !inPostgame(n.parentElement)) continue;
-                const next = n.nodeValue.replace(/\S.*\S|\S/s, headerText);
-                if (next !== n.nodeValue) n.nodeValue = next;
+                const v = n.nodeValue;
+                if (!v || !v.trim() || !inPostgame(n.parentElement)) continue;
+                if (n.parentElement && n.parentElement.closest && n.parentElement.closest('.vr-promo-text')) continue;
+                let next = null;
+                if (VICTORY_RE.test(v) || (RESULT_HEADER_RE.test(v) && looksLikeRank(v))) next = headerText;
+                else if (centerText && PROMO_WORD_RE.test(v) && v.trim().length < 20) next = centerText;
+                if (next === null) continue;
+                const out = v.replace(/\S.*\S|\S/s, next);
+                if (out !== v) n.nodeValue = out;
             }
         }
     }
 
-    const VICTORY_RE = /^\s*(victoire|victory)\s*$/i;
+    // "W:33 - L:36" (EN), "V : 33 - D : 36" (FR)...
+    const WL_RE = /\b([WV]\s*:\s*)(\d+)(\s*[-–—/]\s*)([LD]\s*:\s*)(\d+)/i;
+    const VICTORY_RE = /^\s*(victoire|victory|défaite|defaite|defeat)\s*!?\s*$/i;
+    // The client's own promotion / demotion header: "Promoted to Gold I", "Promotion en Or I", "Rétrogradé en ..."
+    const RESULT_HEADER_RE = /^\s*(promoted to|demoted to|promotion (en|à|au|vers)|promu(e)? (en|à|au)|rétrogradation (en|à|au|vers)|rétrogradé(e)? (en|à|au)|relégué(e)? (en|à|au))\s+\S/i;
+    // Stand-alone "Promoted" / "Demoted" word
+    const PROMO_WORD_RE = /^\s*(promoted|demoted|promotion|promu(e)?|rétrogradation|rétrogradé(e)?|relégué(e)?)\s*!?\s*$/i;
 
     function inPostgame(el) {
         for (let e = el, i = 0; e && i < 40; i++) {
@@ -1840,52 +2122,35 @@ export function load() {
         const tierU = String(c.tier || 'DIAMOND').toUpperCase();
         const isApex = APEX_TIERS.includes(tierU);
         const baseTier = isApex ? 'MASTER' : tierU;
-        const inputStyle = 'background: #222; border: 1px solid #444; border-radius: 4px; padding: 4px; font-size: 13px; font-weight: bold; width: 28%; outline: none;';
-        const selStyle = 'padding: 6px; background: #222; color: #fff; border: 1px solid #444; border-radius: 4px;';
+        const inputStyle = 'background: #222; border: 1px solid #444; border-radius: 4px; padding: 5px; font-size: 13px; font-weight: bold; flex: 1; min-width: 0; outline: none;';
+        const selStyle = 'padding: 5px; background: #222; color: #fff; border: 1px solid #444; border-radius: 4px; width: 100%; box-sizing: border-box;';
+        const field = (label, html, flex = 1, extra = '') => `<div style="flex: ${flex}; display: flex; flex-direction: column; gap: 3px; min-width: 0;" ${extra}><label style="font-size: 10px; color: #888;">${label}</label>${html}</div>`;
+        const ov = !!c.override;
+        const border = c.isConnected ? '#5c16c5' : (ov ? '#d68910' : (c.shared ? '#1e8449' : '#2c2c2c'));
         return `
-            <div class="virtual-rank-card" data-shared="${c.shared ? '1' : ''}" style="background: #181818; border: 1px solid ${c.isConnected ? '#5c16c5' : (c.shared ? '#1e8449' : '#2c2c2c')}; border-radius: 6px; padding: 12px; margin-bottom: 12px; display: flex; flex-direction: column; gap: 8px;">
-                <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
+            <div class="virtual-rank-card" data-shared="${c.shared ? '1' : ''}" data-override="${ov ? '1' : ''}" style="background: #181818; border: 1px solid ${border}; border-radius: 6px; padding: 10px 12px; margin-bottom: 10px; display: flex; flex-direction: column; gap: 8px;">
+                <div style="display: flex; align-items: center; gap: 8px;">
                     <input type="text" class="vr-name" value="${esc(c.name)}" placeholder="Real Name#Tag" title="Real Riot ID" style="${inputStyle} color: #f0e6d2;" />
-                    <input type="text" class="vr-spoof" value="${esc(c.spoofName)}" placeholder="Spoofed Name#Tag" title="Spoofed Riot ID" style="${inputStyle} color: #ff00ff;" />
-                    <select class="vr-type" style="background: #222; color: #ff00ff; border: 1px solid #444; border-radius: 4px; font-size: 11px; padding: 4px;">
-                        <option value="alt" ${c.type === 'alt' ? 'selected' : ''}>Type: Alt</option>
-                        <option value="friend" ${c.type === 'friend' ? 'selected' : ''}>Type: Friend</option>
+                    <input type="text" class="vr-spoof" value="${esc(c.spoofName)}" placeholder="Spoofed Name#Tag (optional)" title="Spoofed Riot ID" style="${inputStyle} color: #ff00ff;" />
+                    <select class="vr-type" style="background: #222; color: #ff00ff; border: 1px solid #444; border-radius: 4px; font-size: 11px; padding: 5px;">
+                        <option value="alt" ${c.type === 'alt' ? 'selected' : ''}>Alt</option>
+                        <option value="friend" ${c.type === 'friend' ? 'selected' : ''}>Friend</option>
                     </select>
-                    ${c.shared ? '<span title="Rank sent automatically by your friend&#39;s plugin (through their presence). It updates on their next sync." style="font-size: 10px; color: #2ecc71; background: #102a1a; padding: 2px 6px; border-radius: 4px; white-space: nowrap;">Shared by friend</span>' : ''}
-                    <span style="font-size: 10px; color: #888; background: #222; padding: 2px 6px; border-radius: 4px;">PUUID: <input type="text" class="vr-puuid" value="${esc(c.puuid)}" style="background: transparent; color: #aaa; border: none; font-size: 10px; width: 110px; outline: none;" /></span>
-                    <button class="vr-delete" style="background: #a93226; color: #fff; border: none; padding: 4px 8px; cursor: pointer; border-radius: 4px; font-size: 11px;">Delete</button>
+                    <button class="vr-override" title="Override: your manual values win over the rank this friend shares with their plugin" style="background: ${ov ? '#d68910' : '#2c2c2c'}; color: ${ov ? '#111' : '#aaa'}; border: none; padding: 5px 8px; cursor: pointer; border-radius: 4px; font-size: 11px; font-weight: bold; white-space: nowrap;">${ov ? 'Override ON' : 'Override'}</button>
+                    <button class="vr-delete" title="Delete this account" style="background: #a93226; color: #fff; border: none; padding: 5px 9px; cursor: pointer; border-radius: 4px; font-size: 11px;">&times;</button>
                 </div>
-                <div style="display: flex; gap: 10px; align-items: center;">
-                    <div style="flex: 1; display: flex; flex-direction: column; gap: 3px;">
-                        <label style="font-size: 10px; color: #888;">Tier</label>
-                        <select class="vr-tier" style="${selStyle}">
-                            ${['IRON', 'BRONZE', 'SILVER', 'GOLD', 'PLATINUM', 'EMERALD', 'DIAMOND', 'MASTER'].map(t => `<option value="${t}" ${baseTier === t ? 'selected' : ''}>${t === 'MASTER' ? 'Master+' : t}</option>`).join('')}
-                        </select>
-                    </div>
-                    <div style="flex: 0.8; display: ${isApex ? 'none' : 'flex'}; flex-direction: column; gap: 3px;" class="vr-div-container">
-                        <label style="font-size: 10px; color: #888;">Division</label>
-                        <select class="vr-div" style="${selStyle}">
-                            ${DIVISIONS.map(d => `<option value="${d}" ${c.division === d ? 'selected' : ''}>${d}</option>`).join('')}
-                        </select>
-                    </div>
-                    <div style="flex: 0.8; display: flex; flex-direction: column; gap: 3px;">
-                        <label style="font-size: 10px; color: #888;">LP ${isApex ? `(${resolvedTierName(tierU, c.lp)})` : '(Max 99)'}</label>
-                        <input type="number" class="vr-lp" value="${Number(c.lp) || 0}" placeholder="LP" ${isApex ? '' : 'max="99"'} style="${selStyle}" />
-                    </div>
-                    <div style="flex: 0.8; display: flex; flex-direction: column; gap: 3px;">
-                        <label style="font-size: 10px; color: #888;">Wins</label>
-                        <input type="number" class="vr-wins" value="${Number(c.wins) || 0}" placeholder="Wins" style="${selStyle}" />
-                    </div>
-                    <div style="flex: 0.8; display: flex; flex-direction: column; gap: 3px;">
-                        <label style="font-size: 10px; color: #888;" title="Empty = 90% of wins">Losses</label>
-                        <input type="number" class="vr-losses" value="${c.losses === undefined || c.losses === null ? '' : Number(c.losses) || 0}" placeholder="auto" style="${selStyle}" />
-                    </div>
-                    <div style="flex: 1.2; display: flex; flex-direction: column; gap: 3px;">
-                        <label style="font-size: 10px; color: #888;">Last Season (Banner)</label>
-                        <select class="vr-last-tier" style="${selStyle}">
-                            ${['UNRANKED', 'IRON', 'BRONZE', 'SILVER', 'GOLD', 'PLATINUM', 'EMERALD', 'DIAMOND', 'MASTER', 'GRANDMASTER', 'CHALLENGER'].map(t => `<option value="${t}" ${(c.lastSeasonTier || 'UNRANKED') === t ? 'selected' : ''}>${t}</option>`).join('')}
-                        </select>
-                    </div>
+                <div style="display: flex; gap: 8px; align-items: flex-end;">
+                    ${field('Tier', `<select class="vr-tier" style="${selStyle}">${['IRON', 'BRONZE', 'SILVER', 'GOLD', 'PLATINUM', 'EMERALD', 'DIAMOND', 'MASTER'].map(t => `<option value="${t}" ${baseTier === t ? 'selected' : ''}>${t === 'MASTER' ? 'Master+' : t}</option>`).join('')}</select>`, 1.2)}
+                    <div class="vr-div-container" style="flex: 0.7; display: ${isApex ? 'none' : 'flex'}; flex-direction: column; gap: 3px; min-width: 0;"><label style="font-size: 10px; color: #888;">Division</label><select class="vr-div" style="${selStyle}">${DIVISIONS.map(d => `<option value="${d}" ${c.division === d ? 'selected' : ''}>${d}</option>`).join('')}</select></div>
+                    <div style="flex: 0.9; display: flex; flex-direction: column; gap: 3px; min-width: 0;"><label style="font-size: 10px; color: #888;">LP ${isApex ? `(${resolvedTierName(tierU, c.lp)})` : '(-99 to 99)'}</label><input type="number" class="vr-lp" value="${Number(c.lp) || 0}" placeholder="LP" ${isApex ? '' : 'min="-99" max="99"'} style="${selStyle}" /></div>
+                    ${field('Wins', `<input type="number" class="vr-wins" value="${Number(c.wins) || 0}" placeholder="Wins" style="${selStyle}" />`, 0.7)}
+                    ${field('<span title="Empty = 90% of wins">Losses</span>', `<input type="number" class="vr-losses" value="${c.losses === undefined || c.losses === null ? '' : Number(c.losses) || 0}" placeholder="auto" style="${selStyle}" />`, 0.7)}
+                    ${field('Last season (banner)', `<select class="vr-last-tier" style="${selStyle}">${['UNRANKED', 'IRON', 'BRONZE', 'SILVER', 'GOLD', 'PLATINUM', 'EMERALD', 'DIAMOND', 'MASTER', 'GRANDMASTER', 'CHALLENGER'].map(t => `<option value="${t}" ${(c.lastSeasonTier || 'UNRANKED') === t ? 'selected' : ''}>${t}</option>`).join('')}</select>`, 1.2)}
+                </div>
+                <div style="display: flex; align-items: center; gap: 8px; font-size: 10px; color: #777;">
+                    ${c.isConnected ? '<span style="color: #b48cff;">Your connected account</span>' : ''}
+                    ${c.shared ? `<span title="Rank sent automatically by your friend&#39;s plugin (through their presence)." style="color: #2ecc71;">Shared by friend${ov ? ' (ignored: override ON)' : ''}</span>` : ''}
+                    <span style="margin-left: auto;">PUUID <input type="text" class="vr-puuid" value="${esc(c.puuid)}" placeholder="required" style="background: transparent; color: #999; border: none; border-bottom: 1px solid #333; font-size: 10px; width: 250px; outline: none;" /></span>
                 </div>
             </div>
         `;
@@ -1948,60 +2213,85 @@ export function load() {
             background: rgba(0,0,0,0.8); display: flex; justify-content: center; align-items: center; z-index: 99999;
         `;
 
+        const section = (title, body, hint = '') => `
+            <div style="background: #1a1a1a; border: 1px solid #282828; border-radius: 6px; padding: 12px; margin-bottom: 12px;">
+                <div style="font-size: 13px; font-weight: bold; color: #d7b7ff; margin-bottom: 10px;">${title}</div>
+                ${body}
+                ${hint ? `<div style="font-size: 11px; color: #777; margin-top: 8px;">${hint}</div>` : ''}
+            </div>`;
+        const grid = (...items) => `<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">${items.join('')}</div>`;
+        const stack = (...items) => `<div style="display: flex; flex-direction: column; gap: 10px;">${items.join('')}</div>`;
+        const TABS = [['accounts', 'Accounts'], ['copycat', 'Copycat'], ['display', 'Display'], ['sharing', 'Sharing'], ['advanced', 'Advanced']];
+        const startTab = openRankConfigModal.lastTab || 'accounts';
+
         modalOverlay.innerHTML = `
-            <div style="background: #121212; border: 1px solid #333; padding: 25px; width: 900px; border-radius: 10px; color: #fff; font-family: sans-serif; box-shadow: 0 10px 30px rgba(0,0,0,0.5);">
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
-                    <div>
-                        <h3 style="margin: 0; color: #f0e6d2; font-size: 18px;">Virtual Ranks & Plugin Settings <span style="font-size: 11px; color: #666;">v${VERSION}</span></h3>
-                        <div style="font-size: 11px; color: #888; margin-top: 6px; display: flex; align-items: center; gap: 8px;">
-                            Manual cutoffs &mdash; GM: <input type="number" id="vr-cut-gm" value="${cutoffBase.GRANDMASTER}" style="${numStyle}" />
-                            Challenger: <input type="number" id="vr-cut-chall" value="${cutoffBase.CHALLENGER}" style="${numStyle}" />
-                            <span style="color: #666;">(in use: ${apexCutoffs.GRANDMASTER} / ${apexCutoffs.CHALLENGER}${settings.autoCutoffs && realCutoffs ? ', real' : ', manual'})</span>
+            <div style="background: #121212; border: 1px solid #333; width: 900px; max-height: 88vh; border-radius: 10px; color: #fff; font-family: sans-serif; box-shadow: 0 10px 30px rgba(0,0,0,0.5); display: flex; flex-direction: column;">
+                <div style="display: flex; justify-content: space-between; align-items: center; padding: 18px 22px 0 22px;">
+                    <h3 style="margin: 0; color: #f0e6d2; font-size: 18px;">Virtual Ranks <span style="font-size: 11px; color: #666;">v${VERSION}</span></h3>
+                    <button id="vr-close" style="background: transparent; color: #aaa; border: none; font-size: 20px; cursor: pointer;">&times;</button>
+                </div>
+                <div id="vr-tabs" style="display: flex; gap: 4px; padding: 12px 22px 0 22px; border-bottom: 1px solid #262626;">
+                    ${TABS.map(([id, label]) => `<button class="vr-tab" data-tab="${id}" style="background: transparent; color: #999; border: none; border-bottom: 2px solid transparent; padding: 8px 12px; cursor: pointer; font-size: 12px; font-weight: bold;">${label}</button>`).join('')}
+                </div>
+
+                <div style="padding: 16px 22px; overflow-y: auto; flex: 1; min-height: 300px;">
+                    <div class="vr-panel" data-panel="accounts">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                            <span style="font-size: 12px; color: #888;">Your accounts (Alt) and your friends' accounts (Friend).</span>
+                            <div style="display: flex; gap: 8px;">
+                                ${btn('vr-fetch-me', '#1f618d', '+ My account')}
+                                ${btn('vr-fetch-visited', '#d35400', '+ Visited profile')}
+                                ${btn('vr-add-manual', '#27ae60', '+ Blank')}
+                            </div>
+                        </div>
+                        <div id="virtual-rank-list">
+                            ${ranksHtml || '<p class="vr-empty" style="color: #666; font-style: italic; text-align: center; padding: 20px;">No accounts configured yet.</p>'}
                         </div>
                     </div>
-                    <button id="vr-close" style="background: transparent; color: #aaa; border: none; font-size: 18px; cursor: pointer;">&times;</button>
-                </div>
 
-                <div style="background: #1a1a1a; border: 1px solid #282828; border-radius: 6px; padding: 12px; margin-bottom: 20px; display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
-                    ${toggle('toggle-banners', settings.spoofBanners, 'Enable Banners & Profiles Spoof')}
-                    ${toggle('toggle-hovercards', settings.spoofHovercards, 'Enable Hovercards Spoof')}
-                    ${toggle('toggle-endgame', settings.spoofEndGame, 'Spoof End of Ranked Stats & Wins')}
-                    ${toggle('toggle-leaderboard', settings.spoofLeaderboard, 'Spoof Social & Top Players Leaderboards')}
-                    ${toggle('toggle-names', settings.spoofNames, 'Enable Name Spoofer')}
-                    ${toggle('toggle-lcu', settings.syncLcu, 'Share my rank in my chat status (visible to friends + plugin sharing)')}
-                    ${toggle('toggle-sharealts', settings.shareAlts, 'Also share my Alt accounts (rank + spoofed name)')}
-                    ${toggle('toggle-statuscopy', settings.shareViaStatus, 'Backup copy in my status message (invisible) &mdash; only if sharing stops working')}
-                    ${toggle('toggle-receive', settings.receiveShares, 'Receive ranks shared by my friends (they need the plugin + sharing on)')}
-                    ${toggle('toggle-autocut', settings.autoCutoffs, `Automatic cutoffs (real top 300) ${realCutoffs ? `&mdash; GM ${realCutoffs.GRANDMASTER} / Chall ${realCutoffs.CHALLENGER}` : '&mdash; not loaded yet'}`)}
-                </div>
+                    <div class="vr-panel" data-panel="copycat">
+                        ${section('Copy a player\'s profile', `
+                            <div style="display: flex; align-items: center; gap: 8px;">
+                                <input type="text" id="vr-cc-id" placeholder="Name#TAG" value="${esc(copycat ? copycat.riotId : '')}" style="flex: 1; padding: 6px; background: #222; color: #fff; border: 1px solid #444; border-radius: 4px; outline: none;" />
+                                ${btn('vr-cc-go', '#8e44ad', 'Copy profile')}
+                                ${copycat ? btn('vr-cc-stop', '#7f8c8d', 'Stop') : ''}
+                            </div>`,
+                            copycat
+                                ? `Copying <b style="color: #d7b7ff;">${esc(copycat.riotId)}</b>. Click "Reload UI" (Advanced tab) after copying to apply it everywhere.`
+                                : 'Copies a player\'s icon, level, profile background, banner, Clash banner and trophies, crest, title, challenge tokens, mastery, Eternals, ranks and Riot ID onto your profile (client side only).')}
+                    </div>
 
-                <div style="background: #1a1a1a; border: 1px solid #282828; border-radius: 6px; padding: 12px; margin-bottom: 6px; display: flex; align-items: center; gap: 8px;">
-                    <span style="font-size: 13px; font-weight: bold; color: #d7b7ff;">Copycat</span>
-                    <input type="text" id="vr-cc-id" placeholder="Name#TAG" value="${esc(copycat ? copycat.riotId : '')}" style="flex: 1; padding: 6px; background: #222; color: #fff; border: 1px solid #444; border-radius: 4px; outline: none;" />
-                    ${btn('vr-cc-go', '#8e44ad', 'Copy profile')}
-                    ${copycat ? btn('vr-cc-stop', '#7f8c8d', 'Stop') : ''}
-                    ${btn('vr-reload', '#34495e', 'Reload UI')}
-                </div>
-                <div style="font-size: 11px; color: #888; margin: 0 0 18px 2px;">
-                    ${copycat
-                        ? `Copying <b style="color: #d7b7ff;">${esc(copycat.riotId)}</b>: icon, level, profile background, banner, crest, title, challenge tokens, mastery score and champions, Eternals, ranks of every queue and Riot ID.`
-                        : 'Copies a player\'s icon, level, profile background, banner, crest, title, challenge tokens, rank and Riot ID onto your profile (client side only).'}
-                </div>
+                    <div class="vr-panel" data-panel="display">
+                        ${section('What the plugin changes on your screen', grid(
+                            toggle('toggle-banners', settings.spoofBanners, 'Profiles, banners & crests'),
+                            toggle('toggle-hovercards', settings.spoofHovercards, 'Hovercards'),
+                            toggle('toggle-endgame', settings.spoofEndGame, 'Spoof End of Ranked (LP, promotions)'),
+                            toggle('toggle-leaderboard', settings.spoofLeaderboard, 'Leaderboards (friends & top players)'),
+                            toggle('toggle-names', settings.spoofNames, 'Name spoofer')))}
+                    </div>
 
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-                    <span style="font-size: 13px; font-weight: bold; color: #bbb;">Configured Accounts (Alts & Friends)</span>
-                    <div style="display: flex; gap: 8px;">
-                        ${btn('vr-fetch-me', '#1f618d', '+ Connected Account')}
-                        ${btn('vr-fetch-visited', '#d35400', '+ Add Visited Profile')}
-                        ${btn('vr-add-manual', '#27ae60', '+ Add Blank')}
+                    <div class="vr-panel" data-panel="sharing">
+                        ${section('Send', stack(
+                            toggle('toggle-lcu', settings.syncLcu, 'Share my rank with my friends (hovercard for everyone, full sync with plugin users)'),
+                            toggle('toggle-sharealts', settings.shareAlts, 'Also share my Alt accounts (rank + spoofed name)'),
+                            toggle('toggle-statuscopy', settings.shareViaStatus, 'Backup copy in my status message (invisible) &mdash; only if sharing stops working')))}
+                        ${section('Receive', toggle('toggle-receive', settings.receiveShares, 'Receive the ranks my friends share'),
+                            'A card with "Override" ON keeps your own values even if that friend shares a rank.')}
+                    </div>
+
+                    <div class="vr-panel" data-panel="advanced">
+                        ${section('Master+ cutoffs', `
+                            ${toggle('toggle-autocut', settings.autoCutoffs, `Automatic cutoffs (real top 300) ${realCutoffs ? `&mdash; GM ${realCutoffs.GRANDMASTER} / Chall ${realCutoffs.CHALLENGER}` : '&mdash; not loaded yet'}`)}
+                            <div style="font-size: 12px; color: #aaa; margin-top: 10px; display: flex; align-items: center; gap: 8px;">
+                                Manual &mdash; GM: <input type="number" id="vr-cut-gm" value="${cutoffBase.GRANDMASTER}" style="${numStyle}" />
+                                Challenger: <input type="number" id="vr-cut-chall" value="${cutoffBase.CHALLENGER}" style="${numStyle}" />
+                                <span style="color: #666;">(in use: ${apexCutoffs.GRANDMASTER} / ${apexCutoffs.CHALLENGER}${settings.autoCutoffs && realCutoffs ? ', real' : ', manual'})</span>
+                            </div>`)}
+                        ${section('Client', btn('vr-reload', '#34495e', 'Reload UI'))}
                     </div>
                 </div>
 
-                <div id="virtual-rank-list" style="max-height: 250px; overflow-y: auto; padding-right: 5px;">
-                    ${ranksHtml || '<p class="vr-empty" style="color: #666; font-style: italic; text-align: center; padding: 20px;">No accounts configured yet.</p>'}
-                </div>
-
-                <div style="display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-top: 20px; border-top: 1px solid #222; padding-top: 15px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; gap: 10px; border-top: 1px solid #222; padding: 12px 22px;">
                     <span id="vr-status" style="font-size: 12px; color: #aaa;"></span>
                     <button id="vr-save" style="background: #5c16c5; color: #fff; border: none; padding: 8px 18px; cursor: pointer; border-radius: 4px; font-weight: bold;">Save Changes</button>
                 </div>
@@ -2011,6 +2301,18 @@ export function load() {
         document.body.appendChild(modalOverlay);
         const $ = (sel) => modalOverlay.querySelector(sel);
         const list = $('#virtual-rank-list');
+
+        const showTab = (id) => {
+            openRankConfigModal.lastTab = id;
+            modalOverlay.querySelectorAll('.vr-panel').forEach(p => { p.style.display = p.dataset.panel === id ? 'block' : 'none'; });
+            modalOverlay.querySelectorAll('.vr-tab').forEach(t => {
+                const on = t.dataset.tab === id;
+                t.style.color = on ? '#f0e6d2' : '#999';
+                t.style.borderBottomColor = on ? '#5c16c5' : 'transparent';
+            });
+        };
+        modalOverlay.querySelectorAll('.vr-tab').forEach(t => { t.onclick = () => showTab(t.dataset.tab); });
+        showTab(startTab);
 
         let statusTimer = null;
         const status = (msg, color = '#aaa') => {
@@ -2055,6 +2357,16 @@ export function load() {
 
         modalOverlay.addEventListener('click', (e) => {
             if (e.target.classList.contains('vr-delete')) e.target.closest('.virtual-rank-card').remove();
+            if (e.target.classList.contains('vr-override')) {
+                const card = e.target.closest('.virtual-rank-card');
+                const on = card.dataset.override !== '1';
+                card.dataset.override = on ? '1' : '';
+                e.target.textContent = on ? 'Override ON' : 'Override';
+                e.target.style.background = on ? '#d68910' : '#2c2c2c';
+                e.target.style.color = on ? '#111' : '#aaa';
+                card.style.borderColor = on ? '#d68910' : (card.dataset.shared === '1' ? '#1e8449' : '#2c2c2c');
+                status(on ? 'Override ON: your values will be kept (click Save).' : 'Override OFF: the friend\'s shared rank will apply again (click Save).', '#f1c40f');
+            }
         });
 
         $('#vr-fetch-me').onclick = async () => {
@@ -2131,11 +2443,14 @@ export function load() {
             card.querySelector('.vr-div-container').style.display = isMaster ? 'none' : 'flex';
             if (isMaster) {
                 lpInput.removeAttribute('max');
+                lpInput.removeAttribute('min');
                 if (label) label.textContent = `LP (${resolvedTierName('MASTER', Number(lpInput.value))})`;
             } else {
                 lpInput.setAttribute('max', '99');
+                lpInput.setAttribute('min', '-99');
                 if (Number(lpInput.value) > 99) lpInput.value = 99;
-                if (label) label.textContent = 'LP (Max 99)';
+                if (Number(lpInput.value) < -99) lpInput.value = -99;
+                if (label) label.textContent = 'LP (-99 to 99)';
             }
         });
 
@@ -2148,6 +2463,8 @@ export function load() {
                 if (label) label.textContent = `LP (${resolvedTierName('MASTER', Number(e.target.value))})`;
             } else if (Number(e.target.value) > 99) {
                 e.target.value = 99;
+            } else if (Number(e.target.value) < -99) {
+                e.target.value = -99;
             }
         });
 
@@ -2173,7 +2490,8 @@ export function load() {
                 const tier = card.querySelector('.vr-tier').value;
                 const division = card.querySelector('.vr-div') ? card.querySelector('.vr-div').value : "I";
                 let lp = Number(card.querySelector('.vr-lp').value) || 0;
-                if (tier !== "MASTER") lp = Math.max(0, Math.min(99, lp));
+                // Negative LP allowed below Master (e.g. "-20 LP" in Gold IV)
+                if (tier !== "MASTER") lp = Math.max(-99, Math.min(99, lp));
 
                 const resolved = resolveTierAndDiv(tier, lp, tier === "MASTER" ? "NA" : division);
                 const lastSeasonTier = card.querySelector('.vr-last-tier').value;
@@ -2186,6 +2504,7 @@ export function load() {
                     wins: Number(card.querySelector('.vr-wins').value) || 0,
                     ...(card.querySelector('.vr-losses').value.trim() !== '' ? { losses: Number(card.querySelector('.vr-losses').value) || 0 } : {}),
                     ...(card.dataset.shared === '1' ? { shared: true, sharedBy: (oldRanks[puuid] || {}).sharedBy } : {}),
+                    ...(card.dataset.override === '1' ? { override: true } : {}),
                     lastSeasonTier,
                     banner: bannerPath(lastSeasonTier),
                     type: card.querySelector('.vr-type').value,
@@ -2232,6 +2551,12 @@ export function load() {
             group: "Virtual Ranks",
             perform: () => openRankConfigModal(),
         });
+        window.CommandBar.addAction({
+            name: "Test promotion ceremony (Virtual Ranks)",
+            group: "Virtual Ranks",
+            perform: () => log(testPromotionCeremony()),
+        });
+
         return true;
     };
 
@@ -2291,6 +2616,15 @@ export function load() {
             if (!eogKey || eogKey === processedEogKey) return;
 
             if (eogFirstSeen.key !== eogKey) eogFirstSeen = { key: eogKey, at: Date.now() };
+            // Until the virtual result is known: hide the client's REAL promotion/demotion header right away
+            if (!eogPromo || eogPromo.key !== eogKey) {
+                if (!currentPuuid) await fetchCurrentPuuid();
+                const meP = extractEogPlayers(statsData).find(pl => pl.puuid === currentPuuid);
+                if (meP && meP.isWin !== null && (getAllVirtualRanks()[currentPuuid] || {}).tier) {
+                    eogPromo = { key: eogKey, kind: 'normal', isWin: meP.isWin, pending: true };
+                    schedulePatch();
+                }
+            }
             const realDelta = await fetchRealLpDelta();
             // The server takes a few seconds to send the LP change: wait for it up to 45 s
             if (realDelta === null && Date.now() - eogFirstSeen.at < 45000 && (statsData.ranked || String(statsData.queueType || '').includes('RANKED'))) return;
@@ -2311,7 +2645,7 @@ export function load() {
                 const conf = ranks[player.puuid];
                 if (!conf || player.isWin === null) return;
                 if (conf.type === 'alt' && player.puuid !== currentPuuid) return;
-                if (conf.shared) return; // rank shared by the friend: their own plugin keeps it updated
+                if (conf.shared && !conf.override) return; // rank shared by the friend: their own plugin keeps it updated
 
                 const lpDelta = (player.puuid === currentPuuid && realDelta !== null)
                     ? realDelta
@@ -2320,10 +2654,19 @@ export function load() {
                 if (player.isWin) newRank.wins = (Number(newRank.wins) || 0) + 1;
                 else newRank.losses = (newRank.losses !== undefined ? Number(newRank.losses) || 0 : Math.round((Number(conf.wins) || 0) * 0.9)) + 1;
                 ranks[player.puuid] = newRank;
-                if (player.puuid === currentPuuid && rankStep(newRank) > rankStep(conf)) {
-                    eogPromo = { key: eogKey, label: rankLabel(newRank.tier, newRank.division) };
+                if (player.puuid === currentPuuid) {
+                    const up = rankStep(newRank) > rankStep(conf), down = rankStep(newRank) < rankStep(conf);
+                    eogPromo = {
+                        key: eogKey,
+                        kind: up ? 'promo' : down ? 'demo' : 'normal',
+                        label: rankLabel(newRank.tier, newRank.division),
+                        delta: lpDelta,
+                        isWin: player.isWin
+                    };
                     storeSet(EOG_PROMO_KEY, eogPromo);
-                    log(`Virtual promotion: ${eogPromo.label}`);
+                    if (up || down) log(`Virtual ${up ? 'promotion' : 'demotion'}: ${eogPromo.label}`);
+                    // Full-screen ceremony only when the TIER changes (Gold -> Platinum), not for a division
+                    if (up && resolveTierAndDiv(newRank.tier, newRank.lp, newRank.division).tier !== resolveTierAndDiv(conf.tier, conf.lp, conf.division).tier) queueCeremony(newRank);
                 }
                 changed = true;
                 log(`End of game: ${conf.name || player.puuid} ${lpDelta > 0 ? '+' : ''}${lpDelta} LP -> ${newRank.text} ${newRank.lp} LP`);
