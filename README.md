@@ -8,6 +8,8 @@ Show any rank you want, on your own client. Pick a rank for yourself, your alts 
 
 
 ---
+<img width="1271" height="716" alt="image" src="https://github.com/user-attachments/assets/8486b60a-b788-497e-8b7d-a09959202ee9" />
+
 
 ## Features
 
@@ -21,6 +23,9 @@ Show any rank you want, on your own client. Pick a rank for yourself, your alts 
 - **Master / Grandmaster / Challenger** follow the real LP cutoffs of your server. They are read from the live top 300, with a manual fallback.
 - Negative LP supported.
 
+<img width="1052" height="638" alt="image" src="https://github.com/user-attachments/assets/668d2128-a9d9-427b-a902-11e0c3325b64" />
+
+
 ### Live LP after your games
 - After each ranked Solo/Duo game, your virtual LP moves by the **real LP you won or lost**, with promotions and demotions.
 - **End-of-game screen**:
@@ -32,6 +37,11 @@ Show any rank you want, on your own client. Pick a rank for yourself, your alts 
 
 ### Leaderboards
 - Friends leaderboard and **Master / GM / Challenger** ladders. Virtual players are placed at the right position, and the top 300 keeps its size.
+
+<img width="552" height="337" alt="image" src="https://github.com/user-attachments/assets/39f7dfa9-5fac-4bd6-9640-c80cacb521e6" />
+
+<img width="1000" height="562" alt="image" src="https://github.com/user-attachments/assets/ca7f2af6-85cc-4482-844c-3c58898d1778" />
+
 
 ### Name spoofer
 - Replace any Riot ID (name and tag) with another one: profiles, chat, friends list, leaderboards, lobbies...
