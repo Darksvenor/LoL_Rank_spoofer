@@ -1,159 +1,132 @@
-# LoL_Rank_spoofer
-A tool to change your rank thoughout the whole LoL client (and game)
+# Rank spoofer — Pengu Loader plugin for the League of Legends client
 
-## Disclaimer 
-This mod is only visible to you and only visual, your friends and other players wont see the changes this mod makes.
+Show any rank you want, on your own client. Pick a rank for yourself, your alts and your friends, and the League client shows it on profiles, hovercards, leaderboards and end-of-game screens. You can also copy another player's profile with Copycat or share your fake rank with friends who use the plugin.
 
-This mod is provided "as is" and i can't be held responsible for any damage it may cause.
+> **Client-side only.** Everything happens on your own screen. Your real rank, your LP and your games on Riot's servers are never touched, and other players keep seeing your real rank on your profile. See [What other players see](#what-other-players-see).
 
-The vast majority of this code was writen by ChatGPT (because of my poor coding skills). 
+> **DISCLAIMER !** Some features such as [Sharing](#sharing-with-friends) are using an exploit in Riot API (See [How it works](#how-it-works)). This looks safe so far but might lead to a ban in the future. USE AT YOUR OWN RISKS !
 
-Thus it is not optimized at all, feel free to contact me for suggestions on discord : @darksvenor
 
-The code and description of this mod is in French because chatGPT prompt also was.
+---
 
-## Download 
+## Features
 
-Get the Simple or Advanced version from the releases.
+### Virtual ranks
+- A rank for any account: **Iron to Challenger**, division, LP, wins / losses and last season's banner.
+- Shown **everywhere** on your client:
+  - profiles, ranked crests and banners;
+  - hovercards and tooltips;
+  - custom game lobbies;
+  - the "highest rank" crest. If another queue (TFT, Flex...) is higher than your virtual Solo/Duo, that queue is shown instead, like the real client does.
+- **Master / Grandmaster / Challenger** follow the real LP cutoffs of your server. They are read from the live top 300, with a manual fallback.
+- Negative LP supported.
 
-## How to use the "simple version"
+### Live LP after your games
+- After each ranked Solo/Duo game, your virtual LP moves by the **real LP you won or lost**, with promotions and demotions.
+- **End-of-game screen**:
+  - the header ("Victory", "Promoted to Diamond I", "Demoted to...") follows your **virtual** rank;
+  - the result under the emblem ("+19 LP", "Promoted", "Demoted") does too;
+  - so do the emblem, the total LP and the **W / L** counter.
+- If your *real* rank is promoted or demoted but your virtual one isn't, the screen shows a normal "Victory" / "Defeat" with your LP change.
+- **Promotion ceremony**: the full-screen video plays when your **virtual tier** goes up, for example Gold to Platinum. The real ceremony is hidden while "Spoof End of Ranked" is on.
 
-For both RankProfile.js , RankLobby.js and NameSpoofer.js , just put them into your PenguLoader "plugins" file. 
+### Leaderboards
+- Friends leaderboard and **Master / GM / Challenger** ladders. Virtual players are placed at the right position, and the top 300 keeps its size.
 
+### Name spoofer
+- Replace any Riot ID (name and tag) with another one: profiles, chat, friends list, leaderboards, lobbies...
 
-### RankProfile.js
+### Copycat
+Type a player's `Name#TAG` and copy their profile onto yours:
+- icon and level;
+- profile background, banner and crest;
+- Clash banner and trophy;
+- title and challenge tokens;
+- mastery score and top champions, and Eternals;
+- ranks of every queue (Solo/Duo, Flex, TFT...);
+- Riot ID.
 
-You will need to open the RankProfile.js file in a text editor and find at the begining find the tier and tierText.
+In leaderboards **you take their place**, and their own row disappears. Click "Stop" to get your own profile back.
 
-tier can have the values for league ranks (gold, platinium, master...) (May be Caps sensitive)
+### Sharing with friends
+- Friends who **also run the plugin** automatically see your virtual rank, spoofed name and alt accounts.
+- **Override**: a button on each friend's card. It keeps your own values instead of what that friend shares.
 
-tierText can have any value as it is the text rank shown on your profile page.
+---
 
-lp and wins are the numbers shown on your profile for Solo/Duo. For tiers below master more than 99 lp (obviously) feels strange.
+## What other players see
 
+| Who | Where | What they see |
+|---|---|---|
+| You | Everywhere in your client | Virtual ranks, spoofed names, copied profile |
+| Friends **with** the plugin | Everywhere in their client | Your virtual rank, spoofed name and alts |
+| Friends **without** the plugin | Hovercard in their friends list | Your virtual rank (sent through your chat presence) |
+| Friends **without** the plugin | Your profile page | Your **real** rank (it comes from Riot's servers) |
+| Everyone else | Lobbies, champ select, loading screen, profiles | Your **real** rank |
 
+---
 
-### RankLobby.js 
+## Installation
 
-Open RankLobby.js in your text editor.
+1. Install [Pengu Loader](https://pengu.lol) and activate it.
+2. Download `RankSpoofer.js` from releases.
+3. Put `RankSpoofer.js` in Pengu Loader's `plugins` folder.
+4. Restart the League client.
 
-Just ignore ProfileIcon and summonerLevel they are useless.
+The plugin works with the client in English and French. It was last tested on client patch **16.22**.
 
-You can change any of the ranks in the begining of the code (Challenger, Diamond...) to any other rank. Even here /lol-game-data/assets/ASSETS/Regalia/BannerSkins/CHALLENGER.png
+---
 
-May be Caps sensitive. 
+## Usage
 
-bannerSrc is the banner behind you in a lobby or the profile. 
+Open the **command bar** with `Ctrl + K` and pick:
 
-crystalLevel is the challenge crystal below your icon.
+- **Configure Virtual Ranks and Profiles**: opens the settings menu.
+- **Test promotion ceremony (Virtual Ranks)**: plays the promotion video for your current virtual tier, without changing anything.
 
-rankedTier is the border around your icon.
+### Settings menu
 
-ranked division is NA for master+ and 1-4 for iron-diamond.
+| Tab | What's inside |
+|---|---|
+| **Accounts** | Your connected account, your alts and your friends: rank, LP, W/L, last season banner, spoofed name, Override button. Add accounts with "+ My account", "+ Visited profile" (open their profile first) or "+ Blank". |
+| **Copycat** | Copy a player's profile by `Name#TAG`, or stop copying. |
+| **Display** | Turn each part on or off: profiles and banners, hovercards, end of ranked, leaderboards, name spoofer. |
+| **Sharing** | Send your rank to friends, also share your alts, receive your friends' ranks. |
+| **Advanced** | Master+ cutoffs (automatic or manual) and a "Reload UI" button. |
 
-Do NOT change crest type or ID.
+Click **Save Changes** to apply. Some screens need a **Reload UI**, for example after Copycat.
 
-#### I want a different banner than the ranked ones, how do i do ? 
+### Console helpers
 
-just go to this website : https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/assets/regalia/bannerskins/
+Open the client DevTools (`Ctrl + Shift + I`) and type any of these in the console:
 
-there is every single banner in the game. 
+```js
+VirtualRanksCopycat('Name#TAG')       // copy a profile
+VirtualRanksCopycat(null)             // stop copying
+VirtualRanksTestPromotion('DIAMOND')  // play the promotion ceremony for a tier
+VirtualRanksDebug()                   // plugin status (hooks, cutoffs...)
+await VirtualRanksShareDebug()        // what your friends are sharing with you
+```
 
-Then you go to your RankLobby.js file and change in bannerSrc the "CHALLENGER.png" (or the rank there is) by the one you want in the website i linked you.
+---
 
+## How it works
 
-### NameSpoofer.js
+- **Client data**: the League client gets its data from a local API (the LCU) through `XMLHttpRequest`, and gets live updates through a WebSocket. The plugin rewrites those responses before the client reads them. The client then displays the virtual data with its own UI, so layout and animations stay intact.
+- **Text**: a few texts that are not driven by data are replaced in the page, for example "Victory" and "Promoted" on the end-of-game screen.
+- **Sharing**: your rank and spoofed name are added to your chat presence (`/lol-chat/v1/me`). Riot's chat servers relay it to your friends, and their plugin reads it.
+- **Storage**: all settings stay in Pengu Loader's `DataStore`, on your PC.
 
-Same as before at the begining of the code you will find :
+---
 
-PSEUDO_ACTUEL : your RIOT Nickname WITHOUT your tagline
+## Limitations
 
-TAGLINE_ACTUEL : ONLY your tagline 
+- Other players' profiles, lobbies and loading screens show your real rank. That data comes from Riot's servers and can't be changed from your client.
+- After an update, the League client may move or rename things, and some parts can stop working until the plugin is updated.
+- Copycat: the Clash trophy and a few other profile items are learned the first time the client asks for them. If one is missing, open your profile, click **Reload UI** and open it again.
 
-NOUVEAU_PSEUDO : the name you want WITHOUT the tagline
+---
 
-NOUVEAU_TAGLINE : ONLY the tagline you want 
+## Disclaimer
 
-
-## How to use Advanced version
-
-only one file in this version 
-
-### Define targeted players
-
-You will have to get the player (you or a friend) PUUID, it can be tricky tho. 
-
-In order to retrieve those puuid follow these steps carefully : 
-
-1) Go to the player's profile
-2) Press CTRL+SHIFT+I simultaneously (it should open DevTools)
-3) Go to elements tab (should already be in it when you opened DevTools)
-4) Press CTRL+F simultaneously
-5) Type PUUID into the search bar
-6) If you are in YOUR profile, there should only be 1
-7) If it is a FRIENDS' profile, there are two results, **PICK THE SECOND ONE** because the first one is your own.
-
-### Replace the placeholders 
-
-When you open the file with notepad or another text software, you should see this at the beginning of the code : 
-
-    "PUUID": {
-        tier: 'RANK (MASTER, PLATINUM...) **IN FULL CAPS*
-        div: 'division (I II III OR IV)',
-        text: 'rank text (put the same value as tier) ',
-        wins: number (22, 58 ),
-        lp: number of lp for the rank (0-99 before masters tier),
-        banner: '/lol-game-data/assets/ASSETS/Regalia/BannerSkins/DIAMOND.png'}, <-- **THIS COMA IS MANDATORY IF YOU PUT MULTIPLE PLAYERS, DO NOT PUT IT AFTER THE LAST ONE**
-
-
-
-Replace the puuid with the one you got in the previous step.
-The rest is self explainatory. for two players, it should look like this: 
-
-
-
-    "71ed307f-1986-5073-8a63-443aa9af787b": {
-        tier: 'MASTER',
-        div: 'NA',
-        text: 'MASTER',
-        wins: 22,
-        lp: 46,
-        banner: '/lol-game-data/assets/ASSETS/Regalia/BannerSkins/DIAMOND.png'}, //<-- **COMA**
-    //Username
-    "71ed307f-1865-5073-8a63-462aa9af747b": {
-        tier: 'IRON',
-        div: 'IV',
-        text: 'IRON',
-        wins: 15414,
-        lp: 0,
-        banner: '/lol-game-data/assets/ASSETS/Regalia/BannerSkins/IRON.png'} //<-- **NO COMA**
-
-
-
-You get it, you put a coma after each player except the last one.
-
-### Pro tips 
-
-Open the file in an IDE such as VS Code if possible, it will show you any errors.
-
-Label the players with //Username just on top of the puuid if you want to modify it later.
-
-
-## To do
-
-~~Hover Cards feels clunky and is not modified as intended~~ (fixed in the advanced version)
-
-~~Other players profile are also affected by the mod.~~ (fixed in the advanced version)
-
-~~Name spoofer does not work in the chat.~~ Fix Name Spoofer 
-
-Ranked post game rank spoofer (in progress)
-
-## Credits
-[Pengu Loader](https://github.com/PenguLoader/PenguLoader) to run all the scripts
-
-[nylish](https://www.youtube.com/watch?v=gU97T9tHs8E&list=PLmfRqBUHwQjJKuxoVOiocEoJPi8SnJSRG&index=3) for the challenger recall
-
-[League Custom Skin](https://github.com/LeagueToolkit/cslol-manager)
-
-[Community Dragon](https://raw.communitydragon.org/) usefull database for all the LoL assets, textures... 
+This project is not affiliated with or endorsed by Riot Games. Modifying the League client may go against Riot's Terms of Service, so use it at your own risk. The plugin does not touch the game, your account or Riot's servers, and it gives no gameplay advantage.
